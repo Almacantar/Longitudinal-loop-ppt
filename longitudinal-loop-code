@@ -1,0 +1,186 @@
+#libraries to load
+library(BBmisc)
+library(circlize)
+library(ComplexHeatmap)   # for heatmap
+library(corrplot)
+library(data.table)
+library(dynutils)
+library(dplyr)
+library(EnhancedVolcano)
+library(foreign)
+library(ggbeeswarm)
+library(ggcorrplot)
+library(ggfortify)
+library(ggplot2)
+library(ggpubr)
+library(ggrepel)
+library(ggsignif)
+library(gplots)
+library(gridExtra) #for grid plots
+library(gtsummary)
+library(hablar)
+library(Hmisc)
+library(lubridate)
+library(pals)
+library(pheatmap)
+library(RColorBrewer)
+library(readr)
+library(raster)  #for cv calculation in dyplr
+library(reshape2)
+library(rstatix)
+library(Rtsne)
+library(scales)
+library(tidyverse)
+library(viridis)
+library(wesanderson)
+library(sjmisc)  #for move_column
+library(stringr)
+library(officer)
+library(rvg)
+
+#set directory
+setwd("C:/Users/delbarri/Google Drive/Senior tech/COVID-19 project/Data analysis/R serum")
+
+#read file and assign it a name
+serum <-read_csv("Copy of serum_collab_v3.csv")
+
+#order
+colnames(serum)
+
+unique(serum$`OUTCOME`)
+unique(serum$`OUTCOME_2`)
+unique(serum$`COHORT`)
+
+serum <-serum %>% 
+  mutate(COHORT_binary = ifelse(COHORT=="COVIDIPVAL", "Validation","Discovery"))
+
+serum$`OUTCOME_2` <-factor(serum$`OUTCOME_2`, levels=c("Healthy","Asymptomatic","<48hrs",">48hrs","ICU","death","long_COVID","LRTI_nonCovid"))
+
+
+##add suffix to the columns we want to loop and organise columns
+
+colnames(serum)[21:38] <- paste(colnames(serum[,c(21:38)]),"param",sep = "_")
+colnames(serum)[61] <- paste(colnames(serum[,c(61)]),"param",sep = "_")
+colnames(serum)[64:66] <- paste(colnames(serum[,c(64:66)]),"param",sep = "_")
+colnames(serum)[39:60] <- paste(colnames(serum[,c(39:60)]),"cyto",sep = "_")
+
+
+
+string_vec <-  colnames(serum)
+
+Days_cols <- string_vec[grepl("days", string_vec) == TRUE]
+Param_cols <- string_vec[grepl("param", string_vec) == TRUE]
+Cyto_cols <- string_vec[grepl("cyto", string_vec) == TRUE]
+
+serum  <- serum %>% 
+  relocate(Days_cols, .after = last_col())%>% 
+  relocate(Param_cols, .after = last_col())%>% 
+  relocate(Cyto_cols, .after = last_col())%>% 
+  select(Patient_identifier, everything())
+  
+colnames(serum)
+
+#check which patients we have more than one sample for
+duplicated(serum$Patient_identifier)
+
+serum_dup  <- serum %>% 
+  group_by(Patient_identifier) %>% 
+  filter(n()>1)%>%
+  arrange(days_from_symptom_onset_to_sample)%>%
+  arrange(Patient_identifier)%>%
+  filter(!OUTCOME_2%in%c("long_COVID","LRTI_nonCovid"))
+  
+
+
+# we want also a cohort with active COVID only 
+#let's see how to best eliminate healthy and PHOSP (recovered)
+colnames(serum)
+
+unique(serum$`Disease`)
+unique(serum$`OUTCOME_2`)
+
+
+serum_dup  <- serum_dup %>% 
+  group_by(Patient_identifier) %>%
+  mutate(Difference_visits_AV_IP10 = AV_IP10_cyto - lag(AV_IP10_cyto, default = 0)) %>%
+  mutate(Difference_visits_AV_IL6 = AV_IL6_cyto - lag(AV_IL6_cyto, default = 0)) %>%
+  mutate(Difference_visits_AV_IL10 = AV_IL10_cyto - lag(AV_IL10_cyto, default = 0))%>%
+  mutate(IP10_visit_trajectory = ifelse(Difference_visits_AV_IP10>0, "Increase","Decrease"))%>%
+  mutate(IL6_visit_trajectory = ifelse(Difference_visits_AV_IL6>0, "Increase","Decrease"))%>%
+  mutate(IL10_visit_trajectory = ifelse(Difference_visits_AV_IL10>0, "Increase","Decrease"))
+
+############ Longitudinal parameters with days from first symptom to sample
+
+# when we log, if we have values between 0 and 1 they will become negative. Let's turn them to 1 so when they log, they are 0
+colnames(serum_dup)
+
+serum_dup[, 39:60][serum_dup[,  39:60]<  1] <- 1
+
+plot_scale_log10=TRUE
+
+
+########################ONE PLOT############################
+
+#this is good for checking the graphs look good
+
+plottrial <- ggplot(serum_dup, aes(x=days_from_symptom_onset_to_sample, y=AV_IP10_cyto))+
+  
+  geom_point(aes(fill=COHORT_sub),alpha=0.7, pch=21, size=4, width=0.5)+
+  geom_path(aes(group=Patient_identifier,colour=COHORT_sub))+
+  theme_classic()+
+  theme(aspect.ratio = 6/10)+
+  theme(axis.text.x=element_text(angle=45,hjust=1,size=15))+   #text in x axis
+  theme(axis.text.y=element_text(size=15))+   #text in y axis
+  theme(axis.title.x=element_text(size=15))+     #label in x axis
+  theme(axis.title.y=element_text(size=15))+     #label in y axis
+  xlab("days_from_symptom_onset_to_sample")+
+  scale_y_log10()+
+  theme(strip.text.x = element_text(size = 15))+
+  facet_wrap(~OUTCOME_2)+
+  geom_smooth(aes(group=OUTCOME_2),colour=wes_palettes$Zissou1[1],method=lm, se=TRUE)
+
+print(plottrial)
+
+#####################LOOP for ppt################################
+
+#create template placeholder ppt
+
+template_pptx <- officer::read_pptx()
+
+#plot columns that have percent_total in the title
+
+for(your_param in grep("_cyto", colnames(serum_dup), value=TRUE)){   
+  foraxis <-your_param
+  
+  print(your_param)
+  
+  serum_dup <- serum_dup%>%
+    filter(!is.na(get(your_param)))  ##delete the NA
+  
+  g <- ggplot(serum_dup, aes(x=days_from_symptom_onset_to_sample, y=get(your_param)))+
+    geom_point(aes(fill=COHORT_sub),alpha=0.7, pch=21, size=4, width=0.5)+
+    geom_path(aes(group=Patient_identifier,colour=COHORT_sub))+
+    theme_classic()+
+    theme(aspect.ratio = 6/10)+
+    theme(axis.text.x=element_text(angle=45,hjust=1,size=15))+   #text in x axis
+    theme(axis.text.y=element_text(size=15))+   #text in y axis
+    theme(axis.title.x=element_text(size=15))+     #label in x axis
+    theme(axis.title.y=element_text(size=15))+     #label in y axis
+    xlab("days_from_symptom_onset_to_sample")+
+    scale_y_log10()+
+    theme(strip.text.x = element_text(size = 15))+
+    facet_wrap(~OUTCOME_2)+
+    geom_smooth(aes(group=OUTCOME_2),colour=wes_palettes$Zissou1[1],method=lm, se=TRUE)+
+    ylab(foraxis)
+  
+  add_slide(template_pptx) %>%
+    ph_with(
+      value =print(g),
+      location = ph_location_label(ph_label = "Content Placeholder 2")
+    )
+  
+}
+dev.off()
+
+# Export
+print(template_pptx, target = "serum_dup.pptx") 
